@@ -4,6 +4,21 @@ set -euo pipefail
 NAME="${NAME:-}"
 GROUP="${GROUP:-Rack01}"
 
+if [ -z "$NAME" ]; then
+  printf 'Enter phone name [Dream###]: '
+  read -r NAME
+fi
+
+NAME="$(printf '%s' "$NAME" | tr -d '[:space:]')"
+
+if ! [[ "$NAME" =~ ^Dream[0-9]{3}$ ]]; then
+  echo "Invalid name: $NAME"
+  echo "Use Dream###, for example Dream114"
+  exit 1
+fi
+
+echo "Installing BobFarms Primo for: $NAME"
+
 # EDIT THESE ONCE BEFORE PUBLISHING
 GITHUB_USER="${GITHUB_USER:-robsamdx64k}"
 GITHUB_REPO="${GITHUB_REPO:-bobfarms-primo-deploy}"
