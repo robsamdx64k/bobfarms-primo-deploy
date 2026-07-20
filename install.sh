@@ -44,7 +44,14 @@ fi
 
 if command -v apt >/dev/null 2>&1; then
   sudo apt update
-  sudo apt install -y curl jq netcat-openbsd screen ca-certificates
+  sudo apt install -y \
+  curl \
+  jq \
+  netcat-openbsd \
+  screen \
+  ca-certificates \
+  libjansson4 \
+  libcurl4
 elif command -v pkg >/dev/null 2>&1; then
   pkg update -y
   pkg install -y curl jq netcat-openbsd screen ca-certificates
