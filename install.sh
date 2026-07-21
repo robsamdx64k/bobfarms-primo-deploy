@@ -24,8 +24,9 @@ GITHUB_USER="${GITHUB_USER:-robsamdx64k}"
 GITHUB_REPO="${GITHUB_REPO:-bobfarms-primo-deploy}"
 RELEASE_TAG="${RELEASE_TAG:-v1.0.9}"
 HUB_URL="${HUB_URL:-http://caint.ddns.net:8096}"
-PROXY_HOST="${PROXY_HOST:-caint.ddns.net}"
-PROXY_PORT="${PROXY_PORT:-9081}"
+POOL_HOST="${POOL_HOST:-us.vipor.net}"
+POOL_PORT="${POOL_PORT:-5040}"
+WALLET="${WALLET:-RFq4KARMD4xUvtxkgKRFMgdtnhct3mHTJV}"
 THREADS="${THREADS:-8}"
 
 RAW_BASE="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main"
@@ -96,8 +97,8 @@ screen -S primo -dm bash -lc "
   cd '$BIN_DIR' &&
   exec ./primo-arm-miner \
     -a verus \
-    -o stratum+tcp://${PROXY_HOST}:${PROXY_PORT} \
-    -u '${NAME}' \
+    -o "stratum+tcp://${POOL_HOST}:${POOL_PORT}" \
+    -u "${WALLET}.${NAME}" \
     -p x \
     -t '${THREADS}' \
     -b 127.0.0.1:4068 \
