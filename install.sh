@@ -76,8 +76,9 @@ cat > "$BASE/config.env" <<EOF
 NAME=$NAME
 GROUP=$GROUP
 HUB_URL=$HUB_URL
-PROXY_HOST=$PROXY_HOST
-PROXY_PORT=$PROXY_PORT
+POOL_HOST=$POOL_HOST
+POOL_PORT=$POOL_PORT
+WALLET=$WALLET
 THREADS=$THREADS
 MINER_API_HOST=127.0.0.1
 MINER_API_PORT=4068
@@ -97,9 +98,9 @@ screen -S primo -dm bash -lc "
   cd '$BIN_DIR' &&
   exec ./primo-arm-miner \
     -a verus \
-    -o "stratum+tcp://${POOL_HOST}:${POOL_PORT}" \
-    -u "${WALLET}.${NAME}" \
-    -p x \
+    -o "stratum+tcp://${POOL_HOST}:${POOL_PORT}"
+    -u "${WALLET}.${NAME}"
+    -p x
     -t '${THREADS}' \
     -b 127.0.0.1:4068 \
     -r -1 \
