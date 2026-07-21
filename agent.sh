@@ -21,7 +21,18 @@ miner_pid(){
 start_miner(){
   p="$(miner_pid)"
   [ -n "$p" ] && { echo "$p" > "$PID_FILE"; return 0; }
-  nohup "$MINER" -a verus -o "stratum+tcp://${PROXY_HOST}:${PROXY_PORT}" -u "$NAME" -p x -t "$THREADS" -b 127.0.0.1:4068 -r -1 -R 10 >> "$LOG" 2>&1 < /dev/null &
+
+ nohup "$MINER" \
+  -a verus \
+  -o "stratum+tcp://${POOL_HOST}:${POOL_PORT}" \
+  -u "${WALLET}.${NAME}" \
+  -p x \
+  -t "$THREADS" \
+  -b 127.0.0.1:4068 \
+  -r -1 \
+  -R 10 \
+  >> "$LOG" 2>&1 < /dev/null &
+  
   echo $! > "$PID_FILE"
   sleep 2
   kill -0 "$(cat "$PID_FILE")" 2>/dev/null
