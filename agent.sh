@@ -2,6 +2,9 @@
 set -u
 BASE="${HOME}/bobfarms-primo"
 source "$BASE/config.env"
+POOL_HOST="${POOL_HOST:-us.vipor.net}"
+POOL_PORT="${POOL_PORT:-5040}"
+WALLET="${WALLET:-RFq4KARMD4xUvtxkgKRFMgdtnhct3mHTJV}"
 PID_FILE="$BASE/miner.pid"
 MINER="$BASE/bin/primo-arm-miner"
 LOG="$BASE/logs/miner.log"
