@@ -15,10 +15,11 @@ source "$CONFIG"
 NAME="${NAME:-$(hostname)}"
 GROUP="${GROUP:-Ungrouped}"
 THREADS="${THREADS:-4}"
-HUB_URL="${HUB_URL:-http://45.33.65.156:8096}"
+HUB_URL="${HUB_URL:-http://caint.ddns.net:8096}"
 MINER_API_HOST="${MINER_API_HOST:-127.0.0.1}"
 MINER_API_PORT="${MINER_API_PORT:-4068}"
 CHECKIN_SECONDS="${CHECKIN_SECONDS:-15}"
+AGENT_TOKEN="${AGENT_TOKEN:-}"
 
 POOL_HOST="${POOL_HOST:-us.vipor.net}"
 POOL_PORT="${POOL_PORT:-5040}"
@@ -33,6 +34,14 @@ LAST_COMMAND=""
 LAST_COMMAND_STATUS=""
 
 mkdir -p "$LOG_DIR"
+
+api_curl() {
+  if [ -n "$AGENT_TOKEN" ]; then
+    curl -H "X-Agent-Token: $AGENT_TOKEN" "$@"
+  else
+    curl "$@"
+  fi
+}
 
 field() {
   local key="$1"
@@ -52,11 +61,24 @@ field() {
 
 json_number() {
   local value="${1:-0}"
-
   case "$value" in
     ''|*[!0-9.-]*) printf '0' ;;
     *) printf '%s' "$value" ;;
   esac
+}
+
+valid_pool_host() {
+  local host="${1:-}"
+  [[ "$host" =~ ^[A-Za-z0-9.-]{1,253}$ ]] &&
+    [[ "$host" != .* ]] &&
+    [[ "$host" != *..* ]]
+}
+
+valid_pool_port() {
+  local port="${1:-}"
+  [[ "$port" =~ ^[0-9]+$ ]] &&
+    [ "$port" -ge 1 ] &&
+    [ "$port" -le 65535 ]
 }
 
 miner_pid() {
@@ -64,7 +86,6 @@ miner_pid() {
 
   if [ -f "$PID_FILE" ]; then
     pid="$(cat "$PID_FILE" 2>/dev/null || true)"
-
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       printf '%s\n' "$pid"
       return 0
@@ -78,14 +99,13 @@ start_miner() {
   local pid=""
 
   pid="$(miner_pid)"
-
   if [ -n "$pid" ]; then
     printf '%s\n' "$pid" > "$PID_FILE"
     return 0
   fi
 
   if [ ! -x "$MINER" ]; then
-    echo "Miner binary is missing or not executable: $MINER" >&2
+    echo "Miner missing: $MINER" >&2
     return 1
   fi
 
@@ -101,14 +121,12 @@ start_miner() {
     >> "$LOG" 2>&1 < /dev/null &
 
   printf '%s\n' "$!" > "$PID_FILE"
-
-  sleep 2
+  sleep 3
   kill -0 "$(cat "$PID_FILE")" 2>/dev/null
 }
 
 stop_miner() {
   local pid=""
-
   pid="$(miner_pid)"
 
   if [ -n "$pid" ]; then
@@ -119,16 +137,106 @@ stop_miner() {
       sleep 1
     done
 
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -9 "$pid" 2>/dev/null || true
-    fi
+    kill -0 "$pid" 2>/dev/null &&
+      kill -9 "$pid" 2>/dev/null ||
+      true
   fi
 
   rm -f "$PID_FILE"
 }
 
+write_pool_config() {
+  local host="$1"
+  local port="$2"
+  local temp="$CONFIG.tmp"
+
+  awk -v host="$host" -v port="$port" '
+    BEGIN {
+      saw_host = 0
+      saw_port = 0
+    }
+    /^POOL_HOST=/ {
+      print "POOL_HOST=" host
+      saw_host = 1
+      next
+    }
+    /^POOL_PORT=/ {
+      print "POOL_PORT=" port
+      saw_port = 1
+      next
+    }
+    { print }
+    END {
+      if (!saw_host) print "POOL_HOST=" host
+      if (!saw_port) print "POOL_PORT=" port
+    }
+  ' "$CONFIG" > "$temp" &&
+    mv "$temp" "$CONFIG"
+}
+
+test_pool() {
+  local host="$1"
+  local port="$2"
+
+  valid_pool_host "$host" || {
+    echo "invalid host"
+    return 1
+  }
+
+  valid_pool_port "$port" || {
+    echo "invalid port"
+    return 1
+  }
+
+  if nc -z -w 6 "$host" "$port" >/dev/null 2>&1; then
+    echo "reachable ${host}:${port}"
+    return 0
+  fi
+
+  echo "unreachable ${host}:${port}"
+  return 1
+}
+
+set_pool() {
+  local host="$1"
+  local port="$2"
+  local old_host="$POOL_HOST"
+  local old_port="$POOL_PORT"
+
+  test_pool "$host" "$port" >/dev/null || return 1
+
+  cp "$CONFIG" "$CONFIG.pool-backup"
+  write_pool_config "$host" "$port" || return 1
+
+  POOL_HOST="$host"
+  POOL_PORT="$port"
+
+  stop_miner
+  sleep 2
+
+  if start_miner; then
+    echo "switched to ${host}:${port}"
+    return 0
+  fi
+
+  cp "$CONFIG.pool-backup" "$CONFIG"
+  POOL_HOST="$old_host"
+  POOL_PORT="$old_port"
+
+  stop_miner
+  sleep 2
+  start_miner || true
+
+  echo "switch failed; rolled back to ${old_host}:${old_port}"
+  return 1
+}
+
 run_command() {
-  case "${1:-}" in
+  local command="${1:-}"
+  local host="${2:-}"
+  local port="${3:-}"
+
+  case "$command" in
     start_miner)
       start_miner
       ;;
@@ -143,6 +251,12 @@ run_command() {
     update)
       nohup "$BASE/update.sh" \
         > "$LOG_DIR/update.log" 2>&1 < /dev/null &
+      ;;
+    test_pool)
+      test_pool "$host" "$port"
+      ;;
+    set_pool)
+      set_pool "$host" "$port"
       ;;
     *)
       return 1
@@ -178,7 +292,9 @@ while true; do
       --arg algo "$(field ALGO "$summary")" \
       --arg miner_version "$(field VER "$summary")" \
       --arg api_version "$(field API "$summary")" \
-      --arg agent_version "1.1.0" \
+      --arg agent_version "2.0.0" \
+      --arg pool_host "$POOL_HOST" \
+      --argjson pool_port "$POOL_PORT" \
       --arg last_command "$LAST_COMMAND" \
       --arg last_command_status "$LAST_COMMAND_STATUS" \
       --argjson miner_running "$running" \
@@ -197,6 +313,8 @@ while true; do
         miner_version: $miner_version,
         api_version: $api_version,
         agent_version: $agent_version,
+        pool_host: $pool_host,
+        pool_port: $pool_port,
         last_command: $last_command,
         last_command_status: $last_command_status,
         threads: $threads,
@@ -208,7 +326,7 @@ while true; do
       }'
   )"
 
-  curl -fsS \
+  api_curl -fsS \
     -H "Content-Type: application/json" \
     --data "$payload" \
     "${HUB_URL%/}/api/agent/checkin" \
@@ -216,7 +334,7 @@ while true; do
     true
 
   response="$(
-    curl -fsS \
+    api_curl -fsS \
       "${HUB_URL%/}/api/agent/commands?name=${NAME}" \
       2>/dev/null ||
       true
@@ -232,10 +350,25 @@ while true; do
       jq -r '.command.command // empty' 2>/dev/null
   )"
 
+  command_host="$(
+    printf '%s' "$response" |
+      jq -r '.command.args.host // empty' 2>/dev/null
+  )"
+
+  command_port="$(
+    printf '%s' "$response" |
+      jq -r '.command.args.port // empty' 2>/dev/null
+  )"
+
   if [ -n "$command_id" ] && [ -n "$command_name" ]; then
     LAST_COMMAND="$command_name"
 
-    if run_command "$command_name"; then
+    result="$(
+      run_command "$command_name" "$command_host" "$command_port" 2>&1
+    )"
+    code=$?
+
+    if [ "$code" -eq 0 ]; then
       status="complete"
       LAST_COMMAND_STATUS="complete"
     else
@@ -247,14 +380,15 @@ while true; do
       jq -n \
         --arg id "$command_id" \
         --arg status "$status" \
+        --arg result "$result" \
         '{
           id: $id,
           status: $status,
-          result: $status
+          result: $result
         }'
     )"
 
-    curl -fsS \
+    api_curl -fsS \
       -H "Content-Type: application/json" \
       --data "$result_payload" \
       "${HUB_URL%/}/api/agent/command-result" \
@@ -264,3 +398,4 @@ while true; do
 
   sleep "$CHECKIN_SECONDS"
 done
+
