@@ -333,16 +333,24 @@ run_mining_command() {
       sleep 2
       start_miner
       ;;
+      
 update)
   nohup bash -lc '
     set -e
+
     BASE="$HOME/bobfarms-primo"
     source "$BASE/config.env"
+
     GITHUB_USER="${GITHUB_USER:-robsamdx64k}"
     GITHUB_REPO="${GITHUB_REPO:-bobfarms-primo-deploy}"
     RAW_BASE="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main"
-    curl -fsSL "$RAW_BASE/update-bootstrap.sh" -o "$BASE/update-bootstrap.sh"
+
+    curl -fsSL \
+      "${RAW_BASE}/update-bootstrap.sh" \
+      -o "$BASE/update-bootstrap.sh"
+
     chmod +x "$BASE/update-bootstrap.sh"
+
     exec "$BASE/update-bootstrap.sh"
   ' > "$BASE/logs/update.log" 2>&1 < /dev/null &
   ;;
