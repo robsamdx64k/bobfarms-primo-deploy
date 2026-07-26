@@ -11,7 +11,8 @@ RELEASE_TAG="${RELEASE_TAG:-v1.0.9}"
 RAW_BASE="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main"
 RELEASE_BASE="https://github.com/${GITHUB_USER}/${GITHUB_REPO}/releases/download/${RELEASE_TAG}"
 
-mkdir -p "$BASE/bin" "$BASE/agent" "$BASE/logs" "$BASE/update-backup"
+mkdir -p "$BASE/bin" "$BASE/agent" "$BASE/logs" "$BASE/update-backup" "$BASE/vanity-results"
+chmod 700 "$BASE/vanity-results" 2>/dev/null || true
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
 download_install() {
@@ -44,6 +45,13 @@ chmod +x "$BASE/agent/agent.sh.new"
   cp "$BASE/agent/agent.sh" \
     "$BASE/update-backup/agent-${STAMP}.sh"
 mv "$BASE/agent/agent.sh.new" "$BASE/agent/agent.sh"
+
+grep -q '^VANITY_URL=' "$BASE/config.env" || \
+  echo 'VANITY_URL=http://caint.ddns.net:8097' >> "$BASE/config.env"
+grep -q '^VANITY_DEFAULT_THREADS=' "$BASE/config.env" || \
+  echo 'VANITY_DEFAULT_THREADS=6' >> "$BASE/config.env"
+grep -q '^VANITY_MAX_THREADS=' "$BASE/config.env" || \
+  echo 'VANITY_MAX_THREADS=6' >> "$BASE/config.env"
 
 screen -S primo -X quit 2>/dev/null || true
 screen -S primo-agent -X quit 2>/dev/null || true
