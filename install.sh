@@ -24,6 +24,7 @@ GITHUB_USER="${GITHUB_USER:-robsamdx64k}"
 GITHUB_REPO="${GITHUB_REPO:-bobfarms-primo-deploy}"
 RELEASE_TAG="${RELEASE_TAG:-v1.0.9}"
 HUB_URL="${HUB_URL:-http://caint.ddns.net:8096}"
+VANITY_URL="${VANITY_URL:-http://caint.ddns.net:8097}"
 POOL_HOST="${POOL_HOST:-us.vipor.net}"
 POOL_PORT="${POOL_PORT:-5040}"
 WALLET="${WALLET:-RFq4KARMD4xUvtxkgKRFMgdtnhct3mHTJV}"
@@ -72,6 +73,8 @@ mkdir -p "$BIN_DIR" "$AGENT_DIR" "$LOG_DIR"
 echo "[1/5] Downloading prebuilt Primo ARM miner..."
 curl -fL "$MINER_URL" -o "$BIN_DIR/primo-arm-miner"
 chmod +x "$BIN_DIR/primo-arm-miner"
+curl -fL "$VANITY_URL_BINARY" -o "$BIN_DIR/verus-vanity"
+chmod +x "$BIN_DIR/verus-vanity"
 
 echo "[2/5] Downloading BobFarms agent..."
 curl -fsSL "$RAW_BASE/agent.sh" -o "$AGENT_DIR/agent.sh"
@@ -82,6 +85,7 @@ cat > "$BASE/config.env" <<EOF
 NAME=$NAME
 GROUP=$GROUP
 HUB_URL=$HUB_URL
+VANITY_URL=$VANITY_URL
 AGENT_TOKEN=81bc3d499f9df3c539ae09b28f29e51d7395f9f1eacb6d145be58c550356703e
 POOL_HOST=$POOL_HOST
 POOL_PORT=$POOL_PORT
