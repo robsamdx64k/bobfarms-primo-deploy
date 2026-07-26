@@ -16,6 +16,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout deployment repo
+        uses: actions/checkout@v4
+
       - name: Install ARM64 compiler
         run: |
           sudo apt-get update
@@ -24,9 +27,11 @@ jobs:
       - name: Install Rust ARM64 target
         run: rustup target add aarch64-unknown-linux-gnu
 
-      - name: Clone Verus vanity source
+      - name: Clone Darktron Verus vanity v3
         run: |
-          git clone --depth 1 https://github.com/Darktron/verus-vanity.git source
+          git clone --depth 1 \
+            https://github.com/Darktron/verus-vanity.git \
+            source
 
       - name: Configure cross linker
         run: |
@@ -38,12 +43,16 @@ jobs:
 
       - name: Build ARM64 release
         working-directory: source
-        run: cargo build --release --target aarch64-unknown-linux-gnu
+        run: |
+          cargo build --release \
+            --target aarch64-unknown-linux-gnu
 
       - name: Prepare asset
         run: |
-          cp source/target/aarch64-unknown-linux-gnu/release/verus-vanity \
+          cp \
+            source/target/aarch64-unknown-linux-gnu/release/verus-vanity \
             verus-vanity-arm64
+
           chmod +x verus-vanity-arm64
           file verus-vanity-arm64
 
@@ -52,4 +61,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.release_tag }}
         run: |
-          gh release upload "$TAG" verus-vanity-arm64 --clobber
+          gh release upload "$TAG" \
+            verus-vanity-arm64 \
+            --clobber \
+            --repo "${{ github.repository }}"
