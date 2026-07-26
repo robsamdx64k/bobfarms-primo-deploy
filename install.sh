@@ -31,7 +31,7 @@ THREADS="${THREADS:-8}"
 
 RAW_BASE="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main"
 MINER_URL="https://github.com/${GITHUB_USER}/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/primo-arm-miner-arm64"
-
+VANITY_URL_BINARY="https://github.com/${GITHUB_USER}/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/verus-vanity-arm64"
 BASE="${HOME}/bobfarms-primo"
 BIN_DIR="${BASE}/bin"
 AGENT_DIR="${BASE}/agent"
