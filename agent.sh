@@ -34,12 +34,16 @@ VANITY_PID_FILE="$BASE/vanity.pid"
 VANITY_LOG="$BASE/logs/vanity.log"
 VANITY_RESULT="$BASE/vanity-result.txt"
 VANITY_STATE="$BASE/vanity-state.env"
-VANITY_VERSION="1.0.0"
+VANITY_RESULTS_DIR="$BASE/vanity-results"
+VANITY_VERSION="3.1.0"
+VANITY_DEFAULT_THREADS="${VANITY_DEFAULT_THREADS:-6}"
+VANITY_MAX_THREADS="${VANITY_MAX_THREADS:-6}"
 
 LAST_COMMAND=""
 LAST_COMMAND_STATUS=""
 
-mkdir -p "$BASE/bin" "$BASE/logs"
+mkdir -p "$BASE/bin" "$BASE/logs" "$VANITY_RESULTS_DIR"
+chmod 700 "$VANITY_RESULTS_DIR" 2>/dev/null || true
 
 api_curl() {
   if [ -n "$AGENT_TOKEN" ]; then
@@ -157,6 +161,19 @@ report_lifecycle() {
     >/dev/null 2>&1 || true
 }
 
+preserve_vanity_result() {
+  local job_id="${1:-unknown}"
+  local stamp destination
+
+  [ -s "$VANITY_RESULT" ] || return 0
+
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  destination="$VANITY_RESULTS_DIR/${job_id}-${stamp}.txt"
+  cp "$VANITY_RESULT" "$destination"
+  chmod 600 "$destination" 2>/dev/null || true
+  echo "Preserved vanity result: $destination" >> "$VANITY_LOG"
+}
+
 resume_after_vanity() {
   [ -f "$VANITY_STATE" ] || return 0
 
@@ -164,13 +181,15 @@ resume_after_vanity() {
   source "$VANITY_STATE"
 
   stop_vanity
+  preserve_vanity_result "${VANITY_JOB_ID:-unknown}"
 
   if [ "${MINING_BEFORE_VANITY:-false}" = "true" ]; then
     start_miner || true
     report_lifecycle "mining_resumed" "${VANITY_JOB_ID:-}"
   fi
 
-  rm -f "$VANITY_STATE" "$VANITY_RESULT"
+  rm -f "$VANITY_STATE" "$VANITY_PID_FILE"
+  # Keep vanity-result.txt for inspection; next job replaces it.
 }
 
 extract_address() {
@@ -208,7 +227,8 @@ start_vanity() {
   local job_id="$1"
   local prefix="$2"
   local suffix="$3"
-  local job_threads="$4"
+  local requested_threads="${4:-$VANITY_DEFAULT_THREADS}"
+  local job_threads
   local current_job=""
   local mining_before=false
   local args=()
@@ -217,6 +237,14 @@ start_vanity() {
     echo "Missing vanity binary: $VANITY_BIN" >> "$VANITY_LOG"
     return 1
   }
+
+  case "$requested_threads" in
+    ''|*[!0-9]*) job_threads="$VANITY_DEFAULT_THREADS" ;;
+    *) job_threads="$requested_threads" ;;
+  esac
+
+  [ "$job_threads" -lt 1 ] && job_threads=1
+  [ "$job_threads" -gt "$VANITY_MAX_THREADS" ] && job_threads="$VANITY_MAX_THREADS"
 
   if [ -f "$VANITY_STATE" ]; then
     current_job="$(
@@ -274,7 +302,7 @@ process_vanity_command() {
     job_id="$(printf '%s' "$response" | jq -r '.command.job.id')"
     prefix="$(printf '%s' "$response" | jq -r '.command.job.prefix // empty')"
     suffix="$(printf '%s' "$response" | jq -r '.command.job.suffix // empty')"
-    job_threads="$(printf '%s' "$response" | jq -r '.command.job.threads')"
+    job_threads="$(printf '%s' "$response" | jq -r '.command.job.threads // 6')"
 
     start_vanity "$job_id" "$prefix" "$suffix" "$job_threads"
 
@@ -330,7 +358,7 @@ while true; do
       --arg algo "$(field ALGO "$summary")" \
       --arg miner_version "$(field VER "$summary")" \
       --arg api_version "$(field API "$summary")" \
-      --arg agent_version "3.0.0" \
+      --arg agent_version "3.1.0" \
       --arg pool_host "$POOL_HOST" \
       --argjson pool_port "$POOL_PORT" \
       --arg last_command "$LAST_COMMAND" \
