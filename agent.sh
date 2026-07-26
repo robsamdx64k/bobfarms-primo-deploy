@@ -333,8 +333,6 @@ run_mining_command() {
       sleep 2
       start_miner
       ;;
-    Replace the update) case in agent.sh with:
-
 update)
   nohup bash -lc '
     set -e
