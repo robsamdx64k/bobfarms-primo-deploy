@@ -4,36 +4,42 @@ set -u
 BASE="${HOME}/bobfarms-primo"
 CONFIG="$BASE/config.env"
 
-if [ ! -f "$CONFIG" ]; then
+[ -f "$CONFIG" ] || {
   echo "Missing configuration: $CONFIG" >&2
   exit 1
-fi
+}
 
 # shellcheck disable=SC1090
 source "$CONFIG"
 
 NAME="${NAME:-$(hostname)}"
 GROUP="${GROUP:-Ungrouped}"
-THREADS="${THREADS:-4}"
+THREADS="${THREADS:-8}"
 HUB_URL="${HUB_URL:-http://caint.ddns.net:8096}"
+VANITY_URL="${VANITY_URL:-http://caint.ddns.net:8097}"
+AGENT_TOKEN="${AGENT_TOKEN:-}"
 MINER_API_HOST="${MINER_API_HOST:-127.0.0.1}"
 MINER_API_PORT="${MINER_API_PORT:-4068}"
 CHECKIN_SECONDS="${CHECKIN_SECONDS:-15}"
-AGENT_TOKEN="${AGENT_TOKEN:-}"
-
 POOL_HOST="${POOL_HOST:-us.vipor.net}"
 POOL_PORT="${POOL_PORT:-5040}"
 WALLET="${WALLET:-RFq4KARMD4xUvtxkgKRFMgdtnhct3mHTJV}"
 
-PID_FILE="$BASE/miner.pid"
 MINER="$BASE/bin/primo-arm-miner"
-LOG_DIR="$BASE/logs"
-LOG="$LOG_DIR/miner.log"
+MINER_PID_FILE="$BASE/miner.pid"
+MINER_LOG="$BASE/logs/miner.log"
+
+VANITY_BIN="$BASE/bin/verus-vanity"
+VANITY_PID_FILE="$BASE/vanity.pid"
+VANITY_LOG="$BASE/logs/vanity.log"
+VANITY_RESULT="$BASE/vanity-result.txt"
+VANITY_STATE="$BASE/vanity-state.env"
+VANITY_VERSION="1.0.0"
 
 LAST_COMMAND=""
 LAST_COMMAND_STATUS=""
 
-mkdir -p "$LOG_DIR"
+mkdir -p "$BASE/bin" "$BASE/logs"
 
 api_curl() {
   if [ -n "$AGENT_TOKEN" ]; then
@@ -44,70 +50,55 @@ api_curl() {
 }
 
 field() {
-  local key="$1"
-  local input="${2:-}"
-
-  printf '%s' "$input" |
+  printf '%s' "${2:-}" |
     tr '|' ';' |
     tr ';' '\n' |
-    awk -F= -v k="$key" '
-      $1 == k {
-        sub(/^[^=]*=/, "", $0)
-        print
-        exit
-      }
-    '
+    awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,"",$0);print;exit}'
 }
 
-json_number() {
-  local value="${1:-0}"
-  case "$value" in
+number_or_zero() {
+  case "${1:-}" in
     ''|*[!0-9.-]*) printf '0' ;;
-    *) printf '%s' "$value" ;;
+    *) printf '%s' "$1" ;;
   esac
 }
 
-valid_pool_host() {
-  local host="${1:-}"
-  [[ "$host" =~ ^[A-Za-z0-9.-]{1,253}$ ]] &&
-    [[ "$host" != .* ]] &&
-    [[ "$host" != *..* ]]
-}
+pid_from_file() {
+  local file="$1"
+  local pid=""
 
-valid_pool_port() {
-  local port="${1:-}"
-  [[ "$port" =~ ^[0-9]+$ ]] &&
-    [ "$port" -ge 1 ] &&
-    [ "$port" -le 65535 ]
+  [ -f "$file" ] || return 0
+  pid="$(cat "$file" 2>/dev/null || true)"
+
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    printf '%s\n' "$pid"
+  fi
 }
 
 miner_pid() {
-  local pid=""
-
-  if [ -f "$PID_FILE" ]; then
-    pid="$(cat "$PID_FILE" 2>/dev/null || true)"
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      printf '%s\n' "$pid"
-      return 0
-    fi
-  fi
-
+  local pid
+  pid="$(pid_from_file "$MINER_PID_FILE")"
+  [ -n "$pid" ] && { printf '%s\n' "$pid"; return; }
   pgrep -f "$MINER" 2>/dev/null | head -n1 || true
 }
 
-start_miner() {
-  local pid=""
+vanity_pid() {
+  local pid
+  pid="$(pid_from_file "$VANITY_PID_FILE")"
+  [ -n "$pid" ] && { printf '%s\n' "$pid"; return; }
+  pgrep -f "$VANITY_BIN" 2>/dev/null | head -n1 || true
+}
 
+start_miner() {
+  local pid
   pid="$(miner_pid)"
+
   if [ -n "$pid" ]; then
-    printf '%s\n' "$pid" > "$PID_FILE"
+    printf '%s\n' "$pid" > "$MINER_PID_FILE"
     return 0
   fi
 
-  if [ ! -x "$MINER" ]; then
-    echo "Miner missing: $MINER" >&2
-    return 1
-  fi
+  [ -x "$MINER" ] || return 1
 
   nohup "$MINER" \
     -a verus \
@@ -118,131 +109,197 @@ start_miner() {
     -b "${MINER_API_HOST}:${MINER_API_PORT}" \
     -r -1 \
     -R 10 \
-    >> "$LOG" 2>&1 < /dev/null &
+    >> "$MINER_LOG" 2>&1 < /dev/null &
 
-  printf '%s\n' "$!" > "$PID_FILE"
+  printf '%s\n' "$!" > "$MINER_PID_FILE"
   sleep 3
-  kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+  kill -0 "$(cat "$MINER_PID_FILE")" 2>/dev/null
 }
 
 stop_miner() {
-  local pid=""
+  local pid
   pid="$(miner_pid)"
 
   if [ -n "$pid" ]; then
     kill "$pid" 2>/dev/null || true
-
-    for _ in 1 2 3 4 5; do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 1
-    done
-
-    kill -0 "$pid" 2>/dev/null &&
-      kill -9 "$pid" 2>/dev/null ||
-      true
+    sleep 2
+    kill -9 "$pid" 2>/dev/null || true
   fi
 
-  rm -f "$PID_FILE"
+  rm -f "$MINER_PID_FILE"
 }
 
-write_pool_config() {
-  local host="$1"
-  local port="$2"
-  local temp="$CONFIG.tmp"
+stop_vanity() {
+  local pid
+  pid="$(vanity_pid)"
 
-  awk -v host="$host" -v port="$port" '
-    BEGIN {
-      saw_host = 0
-      saw_port = 0
-    }
-    /^POOL_HOST=/ {
-      print "POOL_HOST=" host
-      saw_host = 1
-      next
-    }
-    /^POOL_PORT=/ {
-      print "POOL_PORT=" port
-      saw_port = 1
-      next
-    }
-    { print }
-    END {
-      if (!saw_host) print "POOL_HOST=" host
-      if (!saw_port) print "POOL_PORT=" port
-    }
-  ' "$CONFIG" > "$temp" &&
-    mv "$temp" "$CONFIG"
+  if [ -n "$pid" ]; then
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+
+  rm -f "$VANITY_PID_FILE"
 }
 
-test_pool() {
-  local host="$1"
-  local port="$2"
+report_lifecycle() {
+  local event="$1"
+  local job_id="$2"
 
-  valid_pool_host "$host" || {
-    echo "invalid host"
+  api_curl -fsS \
+    -H "Content-Type: application/json" \
+    --data "$(jq -n \
+      --arg name "$NAME" \
+      --arg job_id "$job_id" \
+      --arg event "$event" \
+      '{name:$name,job_id:$job_id,event:$event}')" \
+    "${VANITY_URL%/}/api/agent/lifecycle" \
+    >/dev/null 2>&1 || true
+}
+
+resume_after_vanity() {
+  [ -f "$VANITY_STATE" ] || return 0
+
+  # shellcheck disable=SC1090
+  source "$VANITY_STATE"
+
+  stop_vanity
+
+  if [ "${MINING_BEFORE_VANITY:-false}" = "true" ]; then
+    start_miner || true
+    report_lifecycle "mining_resumed" "${VANITY_JOB_ID:-}"
+  fi
+
+  rm -f "$VANITY_STATE" "$VANITY_RESULT"
+}
+
+extract_address() {
+  local file="$1"
+
+  grep -Eo 'R[1-9A-HJ-NP-Za-km-z]{25,40}' "$file" |
+    head -n1 ||
+    true
+}
+
+submit_vanity_result() {
+  local job_id="$1"
+  local address
+  local result
+
+  address="$(extract_address "$VANITY_RESULT")"
+  [ -n "$address" ] || return 1
+
+  result="$(cat "$VANITY_RESULT" 2>/dev/null || true)"
+  [ -n "$result" ] || return 1
+
+  api_curl -fsS \
+    -H "Content-Type: application/json" \
+    --data "$(jq -n \
+      --arg name "$NAME" \
+      --arg job_id "$job_id" \
+      --arg address "$address" \
+      --arg result "$result" \
+      '{name:$name,job_id:$job_id,address:$address,result:$result}')" \
+    "${VANITY_URL%/}/api/agent/result" \
+    >/dev/null
+}
+
+start_vanity() {
+  local job_id="$1"
+  local prefix="$2"
+  local suffix="$3"
+  local job_threads="$4"
+  local current_job=""
+  local mining_before=false
+  local args=()
+
+  [ -x "$VANITY_BIN" ] || {
+    echo "Missing vanity binary: $VANITY_BIN" >> "$VANITY_LOG"
     return 1
   }
 
-  valid_pool_port "$port" || {
-    echo "invalid port"
-    return 1
-  }
+  if [ -f "$VANITY_STATE" ]; then
+    current_job="$(
+      sed -n 's/^VANITY_JOB_ID=//p' "$VANITY_STATE" |
+        head -n1
+    )"
+  fi
 
-  if nc -z -w 6 "$host" "$port" >/dev/null 2>&1; then
-    echo "reachable ${host}:${port}"
+  if [ "$current_job" = "$job_id" ] && [ -n "$(vanity_pid)" ]; then
     return 0
   fi
 
-  echo "unreachable ${host}:${port}"
-  return 1
-}
+  resume_after_vanity
 
-set_pool() {
-  local host="$1"
-  local port="$2"
-  local old_host="$POOL_HOST"
-  local old_port="$POOL_PORT"
+  [ -n "$(miner_pid)" ] && mining_before=true
 
-  test_pool "$host" "$port" >/dev/null || return 1
+  cat > "$VANITY_STATE" <<EOF
+VANITY_JOB_ID=$job_id
+MINING_BEFORE_VANITY=$mining_before
+EOF
 
-  cp "$CONFIG" "$CONFIG.pool-backup"
-  write_pool_config "$host" "$port" || return 1
-
-  POOL_HOST="$host"
-  POOL_PORT="$port"
-
-  stop_miner
-  sleep 2
-
-  if start_miner; then
-    echo "switched to ${host}:${port}"
-    return 0
+  if [ "$mining_before" = "true" ]; then
+    stop_miner
+    report_lifecycle "mining_stopped" "$job_id"
   fi
 
-  cp "$CONFIG.pool-backup" "$CONFIG"
-  POOL_HOST="$old_host"
-  POOL_PORT="$old_port"
+  rm -f "$VANITY_RESULT"
+  : > "$VANITY_LOG"
 
-  stop_miner
-  sleep 2
-  start_miner || true
+  args+=(--matches 1 --threads "$job_threads" --output "$VANITY_RESULT")
+  [ -n "$prefix" ] && args+=(--prefix "$prefix")
+  [ -n "$suffix" ] && args+=(--suffix "$suffix")
 
-  echo "switch failed; rolled back to ${old_host}:${old_port}"
-  return 1
+  nohup "$VANITY_BIN" "${args[@]}" \
+    >> "$VANITY_LOG" 2>&1 < /dev/null &
+
+  printf '%s\n' "$!" > "$VANITY_PID_FILE"
 }
 
-run_command() {
-  local command="${1:-}"
-  local host="${2:-}"
-  local port="${3:-}"
+process_vanity_command() {
+  local response="$1"
+  local action job_id prefix suffix job_threads
+  local local_job=""
 
-  case "$command" in
-    start_miner)
-      start_miner
-      ;;
-    stop_miner)
-      stop_miner
-      ;;
+  action="$(printf '%s' "$response" | jq -r '.command.action // "idle"')"
+
+  if [ -f "$VANITY_STATE" ]; then
+    local_job="$(
+      sed -n 's/^VANITY_JOB_ID=//p' "$VANITY_STATE" |
+        head -n1
+    )"
+  fi
+
+  if [ "$action" = "run" ]; then
+    job_id="$(printf '%s' "$response" | jq -r '.command.job.id')"
+    prefix="$(printf '%s' "$response" | jq -r '.command.job.prefix // empty')"
+    suffix="$(printf '%s' "$response" | jq -r '.command.job.suffix // empty')"
+    job_threads="$(printf '%s' "$response" | jq -r '.command.job.threads')"
+
+    start_vanity "$job_id" "$prefix" "$suffix" "$job_threads"
+
+    if [ -s "$VANITY_RESULT" ]; then
+      if submit_vanity_result "$job_id"; then
+        resume_after_vanity
+      fi
+    elif [ -f "$VANITY_PID_FILE" ] && [ -z "$(vanity_pid)" ]; then
+      # Generator exited. It may have written the result immediately.
+      if [ -s "$VANITY_RESULT" ] && submit_vanity_result "$job_id"; then
+        resume_after_vanity
+      else
+        echo "Vanity generator exited without a result" >> "$VANITY_LOG"
+      fi
+    fi
+  elif [ -n "$local_job" ]; then
+    # Job was found by another phone or stopped by the operator.
+    resume_after_vanity
+  fi
+}
+
+run_mining_command() {
+  case "${1:-}" in
+    start_miner) start_miner ;;
+    stop_miner) stop_miner ;;
     restart_miner)
       stop_miner
       sleep 2
@@ -250,17 +307,9 @@ run_command() {
       ;;
     update)
       nohup "$BASE/update.sh" \
-        > "$LOG_DIR/update.log" 2>&1 < /dev/null &
+        > "$BASE/logs/update.log" 2>&1 < /dev/null &
       ;;
-    test_pool)
-      test_pool "$host" "$port"
-      ;;
-    set_pool)
-      set_pool "$host" "$port"
-      ;;
-    *)
-      return 1
-      ;;
+    *) return 1 ;;
   esac
 }
 
@@ -271,20 +320,9 @@ while true; do
       true
   )"
 
-  if [ -n "$summary" ]; then
-    running=true
-  else
-    running=false
-  fi
+  [ -n "$summary" ] && running=true || running=false
 
-  threads="$(json_number "$(field GPUS "$summary")")"
-  khs="$(json_number "$(field KHS "$summary")")"
-  accepted="$(json_number "$(field ACC "$summary")")"
-  rejected="$(json_number "$(field REJ "$summary")")"
-  difficulty="$(json_number "$(field DIFF "$summary")")"
-  miner_uptime="$(json_number "$(field UPTIME "$summary")")"
-
-  payload="$(
+  mining_payload="$(
     jq -n \
       --arg name "$NAME" \
       --arg group "$GROUP" \
@@ -292,110 +330,114 @@ while true; do
       --arg algo "$(field ALGO "$summary")" \
       --arg miner_version "$(field VER "$summary")" \
       --arg api_version "$(field API "$summary")" \
-      --arg agent_version "2.0.0" \
+      --arg agent_version "3.0.0" \
       --arg pool_host "$POOL_HOST" \
       --argjson pool_port "$POOL_PORT" \
       --arg last_command "$LAST_COMMAND" \
       --arg last_command_status "$LAST_COMMAND_STATUS" \
       --argjson miner_running "$running" \
-      --argjson threads "$threads" \
-      --argjson khs "$khs" \
-      --argjson accepted "$accepted" \
-      --argjson rejected "$rejected" \
-      --argjson difficulty "$difficulty" \
-      --argjson miner_uptime "$miner_uptime" \
-      '{
-        name: $name,
-        group: $group,
-        hostname: $hostname,
-        miner_running: $miner_running,
-        algo: $algo,
-        miner_version: $miner_version,
-        api_version: $api_version,
-        agent_version: $agent_version,
-        pool_host: $pool_host,
-        pool_port: $pool_port,
-        last_command: $last_command,
-        last_command_status: $last_command_status,
-        threads: $threads,
-        khs: $khs,
-        accepted: $accepted,
-        rejected: $rejected,
-        difficulty: $difficulty,
-        miner_uptime: $miner_uptime
-      }'
+      --argjson threads "$(number_or_zero "$(field GPUS "$summary")")" \
+      --argjson khs "$(number_or_zero "$(field KHS "$summary")")" \
+      --argjson accepted "$(number_or_zero "$(field ACC "$summary")")" \
+      --argjson rejected "$(number_or_zero "$(field REJ "$summary")")" \
+      --argjson difficulty "$(number_or_zero "$(field DIFF "$summary")")" \
+      --argjson miner_uptime "$(number_or_zero "$(field UPTIME "$summary")")" \
+      '{name:$name,group:$group,hostname:$hostname,
+        miner_running:$miner_running,algo:$algo,
+        miner_version:$miner_version,api_version:$api_version,
+        agent_version:$agent_version,pool_host:$pool_host,
+        pool_port:$pool_port,last_command:$last_command,
+        last_command_status:$last_command_status,threads:$threads,
+        khs:$khs,accepted:$accepted,rejected:$rejected,
+        difficulty:$difficulty,miner_uptime:$miner_uptime}'
   )"
 
   api_curl -fsS \
     -H "Content-Type: application/json" \
-    --data "$payload" \
+    --data "$mining_payload" \
     "${HUB_URL%/}/api/agent/checkin" \
-    >/dev/null 2>&1 ||
-    true
+    >/dev/null 2>&1 || true
 
-  response="$(
+  mining_response="$(
     api_curl -fsS \
       "${HUB_URL%/}/api/agent/commands?name=${NAME}" \
-      2>/dev/null ||
-      true
+      2>/dev/null || true
   )"
 
   command_id="$(
-    printf '%s' "$response" |
+    printf '%s' "$mining_response" |
       jq -r '.command.id // empty' 2>/dev/null
   )"
 
   command_name="$(
-    printf '%s' "$response" |
+    printf '%s' "$mining_response" |
       jq -r '.command.command // empty' 2>/dev/null
-  )"
-
-  command_host="$(
-    printf '%s' "$response" |
-      jq -r '.command.args.host // empty' 2>/dev/null
-  )"
-
-  command_port="$(
-    printf '%s' "$response" |
-      jq -r '.command.args.port // empty' 2>/dev/null
   )"
 
   if [ -n "$command_id" ] && [ -n "$command_name" ]; then
     LAST_COMMAND="$command_name"
 
-    result="$(
-      run_command "$command_name" "$command_host" "$command_port" 2>&1
-    )"
-    code=$?
-
-    if [ "$code" -eq 0 ]; then
-      status="complete"
-      LAST_COMMAND_STATUS="complete"
+    if run_mining_command "$command_name"; then
+      command_status=complete
+      LAST_COMMAND_STATUS=complete
     else
-      status="failed"
-      LAST_COMMAND_STATUS="failed"
+      command_status=failed
+      LAST_COMMAND_STATUS=failed
     fi
-
-    result_payload="$(
-      jq -n \
-        --arg id "$command_id" \
-        --arg status "$status" \
-        --arg result "$result" \
-        '{
-          id: $id,
-          status: $status,
-          result: $result
-        }'
-    )"
 
     api_curl -fsS \
       -H "Content-Type: application/json" \
-      --data "$result_payload" \
+      --data "$(jq -n \
+        --arg id "$command_id" \
+        --arg status "$command_status" \
+        '{id:$id,status:$status,result:$status}')" \
       "${HUB_URL%/}/api/agent/command-result" \
-      >/dev/null 2>&1 ||
-      true
+      >/dev/null 2>&1 || true
   fi
+
+  local_vanity_job=""
+  [ -f "$VANITY_STATE" ] &&
+    local_vanity_job="$(
+      sed -n 's/^VANITY_JOB_ID=//p' "$VANITY_STATE" |
+        head -n1
+    )"
+
+  vanity_pid_value="$(vanity_pid)"
+  [ -n "$vanity_pid_value" ] &&
+    vanity_status=searching ||
+    vanity_status=idle
+
+  vanity_payload="$(
+    jq -n \
+      --arg name "$NAME" \
+      --arg group "$GROUP" \
+      --arg vanity_version "$VANITY_VERSION" \
+      --arg vanity_status "$vanity_status" \
+      --arg vanity_job_id "$local_vanity_job" \
+      --argjson vanity_pid "${vanity_pid_value:-0}" \
+      --arg vanity_output_tail "$(tail -c 2500 "$VANITY_LOG" 2>/dev/null || true)" \
+      --argjson mining_before_vanity "$(
+        [ -f "$VANITY_STATE" ] &&
+          grep -q '^MINING_BEFORE_VANITY=true$' "$VANITY_STATE" &&
+          echo true ||
+          echo false
+      )" \
+      '{name:$name,group:$group,vanity_version:$vanity_version,
+        vanity_status:$vanity_status,vanity_job_id:$vanity_job_id,
+        vanity_pid:$vanity_pid,vanity_output_tail:$vanity_output_tail,
+        mining_before_vanity:$mining_before_vanity}'
+  )"
+
+  vanity_response="$(
+    api_curl -fsS \
+      -H "Content-Type: application/json" \
+      --data "$vanity_payload" \
+      "${VANITY_URL%/}/api/agent/checkin" \
+      2>/dev/null || true
+  )"
+
+  [ -n "$vanity_response" ] &&
+    process_vanity_command "$vanity_response"
 
   sleep "$CHECKIN_SECONDS"
 done
-
