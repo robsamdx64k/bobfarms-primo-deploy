@@ -105,7 +105,7 @@ start_miner() {
   [ -x "$MINER" ] || return 1
 
   nohup "$MINER" \
-    -a verus \
+    -a "${ALGO:-verus}" \
     -o "stratum+tcp://${POOL_HOST}:${POOL_PORT}" \
     -u "${WALLET}.${NAME}" \
     -p x \
@@ -324,36 +324,115 @@ process_vanity_command() {
   fi
 }
 
+
+valid_pool_host() {
+  local host="${1:-}"
+  [[ "$host" =~ ^[A-Za-z0-9.-]{1,253}$ ]] && [[ "$host" != .* ]] && [[ "$host" != *..* ]]
+}
+valid_pool_port() {
+  [[ "${1:-}" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+valid_wallet() {
+  [[ "${1:-}" =~ ^[A-Za-z0-9_.:+/-]{20,200}$ ]]
+}
+valid_algo() {
+  [ "${1:-}" = "verus" ] || [ "${1:-}" = "randomx" ]
+}
+write_config_value() {
+  local key="$1" value="$2" temporary="${CONFIG}.tmp"
+  awk -v key="$key" -v value="$value" '
+    BEGIN{found=0}
+    $0 ~ "^" key "=" {print key "=" value; found=1; next}
+    {print}
+    END{if(!found) print key "=" value}
+  ' "$CONFIG" > "$temporary" && mv "$temporary" "$CONFIG"
+}
+test_pool_connection() {
+  local host="$1" port="$2"
+  valid_pool_host "$host" || { echo "Invalid pool host"; return 1; }
+  valid_pool_port "$port" || { echo "Invalid pool port"; return 1; }
+  if command -v nc >/dev/null 2>&1; then
+    nc -z -w 8 "$host" "$port" >/dev/null 2>&1
+  else
+    timeout 8 bash -c "exec 3<>/dev/tcp/${host}/${port}" >/dev/null 2>&1
+  fi
+}
+set_pool_config() {
+  local host="$1" port="$2" old_host="$POOL_HOST" old_port="$POOL_PORT" backup="${CONFIG}.pool-backup"
+  test_pool_connection "$host" "$port" || { echo "Pool unreachable: ${host}:${port}"; return 1; }
+  cp "$CONFIG" "$backup"
+  write_config_value POOL_HOST "$host" && write_config_value POOL_PORT "$port" || return 1
+  POOL_HOST="$host"; POOL_PORT="$port"
+  stop_miner; sleep 2
+  if start_miner; then echo "Pool switched to ${host}:${port}"; return 0; fi
+  cp "$backup" "$CONFIG"; POOL_HOST="$old_host"; POOL_PORT="$old_port"
+  stop_miner; sleep 2; start_miner || true
+  echo "Pool switch failed; restored ${old_host}:${old_port}"; return 1
+}
+
+set_algo_config() {
+  local new_algo="${1,,}" old_algo="${ALGO:-verus}" backup="${CONFIG}.algo-backup"
+  valid_algo "$new_algo" || { echo "Algorithm must be verus or randomx"; return 1; }
+
+  cp "$CONFIG" "$backup"
+  write_config_value ALGO "$new_algo" || return 1
+  ALGO="$new_algo"
+
+  stop_miner
+  sleep 2
+
+  if start_miner; then
+    echo "Algorithm changed to ${new_algo}"
+    return 0
+  fi
+
+  cp "$backup" "$CONFIG"
+  ALGO="$old_algo"
+
+  stop_miner
+  sleep 2
+  start_miner || true
+
+  echo "Algorithm change failed; restored ${old_algo}"
+  return 1
+}
+
+set_wallet_config() {
+  local new_wallet="$1" old_wallet="$WALLET" backup="${CONFIG}.wallet-backup"
+  valid_wallet "$new_wallet" || { echo "Invalid Verus wallet"; return 1; }
+  cp "$CONFIG" "$backup"
+  write_config_value WALLET "$new_wallet" || return 1
+  WALLET="$new_wallet"
+  stop_miner; sleep 2
+  if start_miner; then echo "Wallet changed to ${new_wallet}"; return 0; fi
+  cp "$backup" "$CONFIG"; WALLET="$old_wallet"
+  stop_miner; sleep 2; start_miner || true
+  echo "Wallet change failed; previous wallet restored"; return 1
+}
+
 run_mining_command() {
-  case "${1:-}" in
+  local command="${1:-}" host="${2:-}" port="${3:-}" wallet="${4:-}" algo="${5:-}"
+  case "$command" in
     start_miner) start_miner ;;
     stop_miner) stop_miner ;;
-    restart_miner)
-      stop_miner
-      sleep 2
-      start_miner
+    restart_miner) stop_miner; sleep 2; start_miner ;;
+    test_pool) test_pool_connection "$host" "$port" && echo "Pool reachable: ${host}:${port}" ;;
+    set_pool) set_pool_config "$host" "$port" ;;
+    set_wallet) set_wallet_config "$wallet" ;;
+    set_algo) set_algo_config "$algo" ;;
+    update)
+      nohup bash -lc '
+        set -e
+        BASE="$HOME/bobfarms-primo"
+        source "$BASE/config.env"
+        GITHUB_USER="${GITHUB_USER:-robsamdx64k}"
+        GITHUB_REPO="${GITHUB_REPO:-bobfarms-primo-deploy}"
+        RAW_BASE="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main"
+        curl -fsSL "${RAW_BASE}/update-bootstrap.sh" -o "$BASE/update-bootstrap.sh"
+        chmod +x "$BASE/update-bootstrap.sh"
+        exec "$BASE/update-bootstrap.sh"
+      ' > "$BASE/logs/update.log" 2>&1 < /dev/null &
       ;;
-      
-update)
-  nohup bash -lc '
-    set -e
-
-    BASE="$HOME/bobfarms-primo"
-    source "$BASE/config.env"
-
-    GITHUB_USER="${GITHUB_USER:-robsamdx64k}"
-    GITHUB_REPO="${GITHUB_REPO:-bobfarms-primo-deploy}"
-    RAW_BASE="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main"
-
-    curl -fsSL \
-      "${RAW_BASE}/update-bootstrap.sh" \
-      -o "$BASE/update-bootstrap.sh"
-
-    chmod +x "$BASE/update-bootstrap.sh"
-
-    exec "$BASE/update-bootstrap.sh"
-  ' > "$BASE/logs/update.log" 2>&1 < /dev/null &
-  ;;
     *) return 1 ;;
   esac
 }
@@ -375,7 +454,7 @@ while true; do
       --arg algo "$(field ALGO "$summary")" \
       --arg miner_version "$(field VER "$summary")" \
       --arg api_version "$(field API "$summary")" \
-      --arg agent_version "3.1.0" \
+      --arg agent_version "3.3.0" \
       --arg pool_host "$POOL_HOST" \
       --argjson pool_port "$POOL_PORT" \
       --arg last_command "$LAST_COMMAND" \
@@ -414,15 +493,18 @@ while true; do
       jq -r '.command.id // empty' 2>/dev/null
   )"
 
-  command_name="$(
-    printf '%s' "$mining_response" |
-      jq -r '.command.command // empty' 2>/dev/null
-  )"
+  command_name="$(printf '%s' "$mining_response" | jq -r '.command.command // empty' 2>/dev/null)"
+  command_host="$(printf '%s' "$mining_response" | jq -r '.command.args.host // empty' 2>/dev/null)"
+  command_port="$(printf '%s' "$mining_response" | jq -r '.command.args.port // empty' 2>/dev/null)"
+  command_wallet="$(printf '%s' "$mining_response" | jq -r '.command.args.wallet // empty' 2>/dev/null)"
+  command_algo="$(printf '%s' "$mining_response" | jq -r '.command.args.algo // empty' 2>/dev/null)"
 
   if [ -n "$command_id" ] && [ -n "$command_name" ]; then
     LAST_COMMAND="$command_name"
+    command_result="$(run_mining_command "$command_name" "$command_host" "$command_port" "$command_wallet" "$command_algo" 2>&1)"
+    command_code=$?
 
-    if run_mining_command "$command_name"; then
+    if [ "$command_code" -eq 0 ]; then
       command_status=complete
       LAST_COMMAND_STATUS=complete
     else
@@ -430,14 +512,7 @@ while true; do
       LAST_COMMAND_STATUS=failed
     fi
 
-    api_curl -fsS \
-      -H "Content-Type: application/json" \
-      --data "$(jq -n \
-        --arg id "$command_id" \
-        --arg status "$command_status" \
-        '{id:$id,status:$status,result:$status}')" \
-      "${HUB_URL%/}/api/agent/command-result" \
-      >/dev/null 2>&1 || true
+    api_curl -fsS       -H "Content-Type: application/json"       --data "$(jq -n         --arg id "$command_id"         --arg status "$command_status"         --arg result "$command_result"         '{id:$id,status:$status,result:$result}')"       "${HUB_URL%/}/api/agent/command-result"       >/dev/null 2>&1 || true
   fi
 
   local_vanity_job=""
