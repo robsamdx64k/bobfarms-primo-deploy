@@ -27,9 +27,10 @@ jobs:
       - name: Install Rust ARM64 target
         run: rustup target add aarch64-unknown-linux-gnu
 
-      - name: Clone Darktron Verus vanity v3
+      - name: Clone Darktron test branch
         run: |
           git clone --depth 1 \
+            --branch test \
             https://github.com/Darktron/verus-vanity.git \
             source
 
