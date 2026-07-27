@@ -370,6 +370,24 @@ set_pool_config() {
   echo "Pool switch failed; restored ${old_host}:${old_port}"; return 1
 }
 
+
+set_mining_profile() {
+  local new_algo="${1,,}" new_wallet="$2" new_host="$3" new_port="$4"
+  local old_algo="${ALGO:-verus}" old_wallet="$WALLET" old_host="$POOL_HOST" old_port="$POOL_PORT"
+  local backup="${CONFIG}.profile-backup"
+  valid_algo "$new_algo" || { echo "Algorithm must be verus or randomx"; return 1; }
+  valid_wallet "$new_wallet" || { echo "Invalid wallet or pool username"; return 1; }
+  test_pool_connection "$new_host" "$new_port" || { echo "Pool unreachable: ${new_host}:${new_port}"; return 1; }
+  cp "$CONFIG" "$backup"
+  write_config_value ALGO "$new_algo" && write_config_value WALLET "$new_wallet" && write_config_value POOL_HOST "$new_host" && write_config_value POOL_PORT "$new_port" || { cp "$backup" "$CONFIG"; echo "Could not write mining profile; config restored"; return 1; }
+  ALGO="$new_algo"; WALLET="$new_wallet"; POOL_HOST="$new_host"; POOL_PORT="$new_port"
+  stop_miner; sleep 2
+  if start_miner; then sleep 5; if pgrep -f "$MINER_BIN" >/dev/null 2>&1; then echo "Profile applied: ${new_algo} ${new_host}:${new_port}"; return 0; fi; fi
+  cp "$backup" "$CONFIG"; ALGO="$old_algo"; WALLET="$old_wallet"; POOL_HOST="$old_host"; POOL_PORT="$old_port"
+  stop_miner; sleep 2; start_miner || true
+  echo "Profile failed; restored ${old_algo} ${old_host}:${old_port}"; return 1
+}
+
 set_algo_config() {
   local new_algo="${1,,}" old_algo="${ALGO:-verus}" backup="${CONFIG}.algo-backup"
   valid_algo "$new_algo" || { echo "Algorithm must be verus or randomx"; return 1; }
@@ -420,6 +438,7 @@ run_mining_command() {
     set_pool) set_pool_config "$host" "$port" ;;
     set_wallet) set_wallet_config "$wallet" ;;
     set_algo) set_algo_config "$algo" ;;
+    set_profile) set_mining_profile "$algo" "$wallet" "$host" "$port" ;;
     update)
       nohup bash -lc '
         set -e
@@ -454,7 +473,7 @@ while true; do
       --arg algo "$(field ALGO "$summary")" \
       --arg miner_version "$(field VER "$summary")" \
       --arg api_version "$(field API "$summary")" \
-      --arg agent_version "3.3.0" \
+      --arg agent_version "3.4.0" \
       --arg pool_host "$POOL_HOST" \
       --argjson pool_port "$POOL_PORT" \
       --arg last_command "$LAST_COMMAND" \
