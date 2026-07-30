@@ -24,6 +24,8 @@ CHECKIN_SECONDS="${CHECKIN_SECONDS:-15}"
 POOL_HOST="${POOL_HOST:-us.vipor.net}"
 POOL_PORT="${POOL_PORT:-5040}"
 WALLET="${WALLET:-RFq4KARMD4xUvtxkgKRFMgdtnhct3mHTJV}"
+MANAGER="$BASE/miner-manager.sh"
+MINER_STATE="$BASE/miner-state.env"
 
 MINER="$BASE/bin/primo-arm-miner"
 MINER_PID_FILE="$BASE/miner.pid"
@@ -93,45 +95,29 @@ vanity_pid() {
   pgrep -f "$VANITY_BIN" 2>/dev/null | head -n1 || true
 }
 
+active_miner() {
+  local value="primo"
+  [ -f "$MINER_STATE" ] && value="$(sed -n 's/^ACTIVE_MINER=//p' "$MINER_STATE" | head -n1)"
+  printf '%s' "${value:-primo}"
+}
+
 start_miner() {
-  local pid
-  pid="$(miner_pid)"
-
-  if [ -n "$pid" ]; then
-    printf '%s\n' "$pid" > "$MINER_PID_FILE"
-    return 0
-  fi
-
-  [ -x "$MINER" ] || return 1
-
-  nohup "$MINER" \
-    -a "${ALGO:-verus}" \
-    -o "stratum+tcp://${POOL_HOST}:${POOL_PORT}" \
-    -u "${WALLET}.${NAME}" \
-    -p x \
-    -t "$THREADS" \
-    -b "${MINER_API_HOST}:${MINER_API_PORT}" \
-    -r -1 \
-    -R 10 \
-    >> "$MINER_LOG" 2>&1 < /dev/null &
-
-  printf '%s\n' "$!" > "$MINER_PID_FILE"
-  sleep 3
-  kill -0 "$(cat "$MINER_PID_FILE")" 2>/dev/null
+  "$MANAGER" start primo
 }
 
 stop_miner() {
-  local pid
-  pid="$(miner_pid)"
-
-  if [ -n "$pid" ]; then
-    kill "$pid" 2>/dev/null || true
-    sleep 2
-    kill -9 "$pid" 2>/dev/null || true
-  fi
-
-  rm -f "$MINER_PID_FILE"
+  "$MANAGER" stop
 }
+
+start_selected_miner() {
+  local miner="$1"
+  "$MANAGER" start "$miner"
+}
+
+return_to_primo() {
+  "$MANAGER" default "dashboard return to Primo"
+}
+
 
 stop_vanity() {
   local pid
@@ -428,8 +414,40 @@ set_wallet_config() {
   echo "Wallet change failed; previous wallet restored"; return 1
 }
 
+set_multi_miner_profile() {
+  local miner="$1" host="$2" port="$3" wallet="$4" separator="$5"
+  valid_pool_host "$host" || { echo "Invalid pool host"; return 1; }
+  valid_pool_port "$port" || { echo "Invalid pool port"; return 1; }
+  valid_wallet "$wallet" || { echo "Invalid wallet or username"; return 1; }
+  case "$separator" in '.'|'/'|'') ;; *) echo "Invalid worker separator"; return 1;; esac
+  test_pool_connection "$host" "$port" || { echo "Pool unreachable: ${host}:${port}"; return 1; }
+  case "$miner" in
+    primo)
+      write_config_value PRIMO_POOL_HOST "$host"
+      write_config_value PRIMO_POOL_PORT "$port"
+      write_config_value PRIMO_WALLET "$wallet"
+      write_config_value PRIMO_WORKER_SEPARATOR "$separator"
+      ;;
+    drq)
+      write_config_value DRQ_POOL_HOST "$host"
+      write_config_value DRQ_POOL_PORT "$port"
+      write_config_value DRQ_WALLET "$wallet"
+      write_config_value DRQ_WORKER_SEPARATOR "$separator"
+      ;;
+    xmrig)
+      write_config_value XMRIG_POOL_HOST "$host"
+      write_config_value XMRIG_POOL_PORT "$port"
+      write_config_value XMRIG_WALLET "$wallet"
+      write_config_value XMRIG_WORKER_SEPARATOR "$separator"
+      ;;
+    *) echo "Unknown miner"; return 1;;
+  esac
+  source "$CONFIG"
+  start_selected_miner "$miner"
+}
+
 run_mining_command() {
-  local command="${1:-}" host="${2:-}" port="${3:-}" wallet="${4:-}" algo="${5:-}"
+  local command="${1:-}" host="${2:-}" port="${3:-}" wallet="${4:-}" algo="${5:-}" miner="${6:-}" separator="${7:-}"
   case "$command" in
     start_miner) start_miner ;;
     stop_miner) stop_miner ;;
@@ -439,6 +457,9 @@ run_mining_command() {
     set_wallet) set_wallet_config "$wallet" ;;
     set_algo) set_algo_config "$algo" ;;
     set_profile) set_mining_profile "$algo" "$wallet" "$host" "$port" ;;
+    switch_miner) start_selected_miner "$miner" ;;
+    set_miner_profile) set_multi_miner_profile "$miner" "$host" "$port" "$wallet" "$separator" ;;
+    return_primo) return_to_primo ;;
     update)
       nohup bash -lc '
         set -e
@@ -457,11 +478,15 @@ run_mining_command() {
 }
 
 while true; do
-  summary="$(
-    printf 'summary\0' |
+  ACTIVE_MINER="$(active_miner)"
+  summary=""
+  if [ "$ACTIVE_MINER" = "primo" ]; then
+    summary="$(
+    printf 'summary\0'  |
       nc -w 2 "$MINER_API_HOST" "$MINER_API_PORT" 2>/dev/null ||
       true
-  )"
+    )"
+  fi
 
   [ -n "$summary" ] && running=true || running=false
 
@@ -473,7 +498,11 @@ while true; do
       --arg algo "$(field ALGO "$summary")" \
       --arg miner_version "$(field VER "$summary")" \
       --arg api_version "$(field API "$summary")" \
-      --arg agent_version "3.4.0" \
+      --arg agent_version "4.0.0" \
+      --arg active_miner "$ACTIVE_MINER" \
+      --arg requested_miner "$(sed -n 's/^REQUESTED_MINER=//p' "$MINER_STATE" 2>/dev/null | head -n1)" \
+      --arg last_failure "$(sed -n 's/^LAST_FAILURE=//p' "$MINER_STATE" 2>/dev/null | head -n1)" \
+      --argjson fallback_count "$(number_or_zero "$(sed -n 's/^FALLBACK_COUNT=//p' "$MINER_STATE" 2>/dev/null | head -n1)")" \
       --arg pool_host "$POOL_HOST" \
       --argjson pool_port "$POOL_PORT" \
       --arg last_command "$LAST_COMMAND" \
@@ -488,7 +517,7 @@ while true; do
       '{name:$name,group:$group,hostname:$hostname,
         miner_running:$miner_running,algo:$algo,
         miner_version:$miner_version,api_version:$api_version,
-        agent_version:$agent_version,pool_host:$pool_host,
+        agent_version:$agent_version,active_miner:$active_miner,requested_miner:$requested_miner,last_failure:$last_failure,fallback_count:$fallback_count,pool_host:$pool_host,
         pool_port:$pool_port,last_command:$last_command,
         last_command_status:$last_command_status,threads:$threads,
         khs:$khs,accepted:$accepted,rejected:$rejected,
@@ -517,10 +546,12 @@ while true; do
   command_port="$(printf '%s' "$mining_response" | jq -r '.command.args.port // empty' 2>/dev/null)"
   command_wallet="$(printf '%s' "$mining_response" | jq -r '.command.args.wallet // empty' 2>/dev/null)"
   command_algo="$(printf '%s' "$mining_response" | jq -r '.command.args.algo // empty' 2>/dev/null)"
+  command_miner="$(printf '%s' "$mining_response" | jq -r '.command.args.miner // empty' 2>/dev/null)"
+  command_separator="$(printf '%s' "$mining_response" | jq -r '.command.args.separator // empty' 2>/dev/null)"
 
   if [ -n "$command_id" ] && [ -n "$command_name" ]; then
     LAST_COMMAND="$command_name"
-    command_result="$(run_mining_command "$command_name" "$command_host" "$command_port" "$command_wallet" "$command_algo" 2>&1)"
+    command_result="$(run_mining_command "$command_name" "$command_host" "$command_port" "$command_wallet" "$command_algo" "$command_miner" "$command_separator" 2>&1)"
     command_code=$?
 
     if [ "$command_code" -eq 0 ]; then

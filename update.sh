@@ -1,79 +1,52 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-BASE="${HOME}/bobfarms-primo"
+BASE="$HOME/bobfarms-primo"
 CONFIG="$BASE/config.env"
 source "$CONFIG"
-
-GITHUB_USER="${GITHUB_USER:-robsamdx64k}"
-GITHUB_REPO="${GITHUB_REPO:-bobfarms-primo-deploy}"
-RELEASE_TAG="${RELEASE_TAG:-v1.0.9}"
-RAW_BASE="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main"
-RELEASE_BASE="https://github.com/${GITHUB_USER}/${GITHUB_REPO}/releases/download/${RELEASE_TAG}"
+RAW_BASE="https://raw.githubusercontent.com/${GITHUB_USER:-robsamdx64k}/${GITHUB_REPO:-bobfarms-primo-deploy}/main"
+RELEASE_BASE="https://github.com/${GITHUB_USER:-robsamdx64k}/${GITHUB_REPO:-bobfarms-primo-deploy}/releases/download/${RELEASE_TAG:-v1.0.9}"
+DRQ_URL="https://github.com/DQMining/DRQ-Miner-Beta/releases/download/v0.1.0/DRQ-Miner-v0.1.0-linux-arm64-phone.tar.gz"
+XMRIG_URL="https://raw.githubusercontent.com/robsamdx64k/xm/main/xmrig"
 
 if [ "${1:-}" != "--refreshed" ]; then
   curl -fsSL "$RAW_BASE/update.sh" -o "$BASE/update.sh.new"
-  chmod +x "$BASE/update.sh.new"
-  bash -n "$BASE/update.sh.new"
-  cp "$BASE/update.sh" "$BASE/update.sh.previous" 2>/dev/null || true
+  chmod +x "$BASE/update.sh.new"; bash -n "$BASE/update.sh.new"
   mv "$BASE/update.sh.new" "$BASE/update.sh"
   exec "$BASE/update.sh" --refreshed
 fi
 
-mkdir -p "$BASE/bin" "$BASE/agent" "$BASE/logs" "$BASE/update-backup" "$BASE/vanity-results"
-chmod 700 "$BASE/vanity-results" 2>/dev/null || true
-STAMP="$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$BASE/bin" "$BASE/agent" "$BASE/logs" "$BASE/update-backup" "$HOME/drqminer" "$HOME/xm"
+for file in agent.sh run-miner.sh run-primo.sh run-drq.sh run-xmrig.sh miner-manager.sh miner-watchdog.sh boot-default.sh; do
+  dest="$BASE/$file"; [ "$file" = agent.sh ] && dest="$BASE/agent/agent.sh"
+  curl -fsSL "$RAW_BASE/$file" -o "$dest.new"
+  chmod +x "$dest.new"; bash -n "$dest.new"; mv "$dest.new" "$dest"
+done
 
-download_install() {
-  url="$1"; dest="$2"; label="$3"
-  curl -fL "$url" -o "${dest}.new"
-  chmod +x "${dest}.new"
-  [ -f "$dest" ] && cp "$dest" "$BASE/update-backup/${label}-${STAMP}" || true
-  mv "${dest}.new" "$dest"
-}
+curl -fL "$RELEASE_BASE/primo-arm-miner-arm64" -o "$BASE/bin/primo-arm-miner.new"
+chmod +x "$BASE/bin/primo-arm-miner.new"; mv "$BASE/bin/primo-arm-miner.new" "$BASE/bin/primo-arm-miner"
+curl -fL "$RELEASE_BASE/verus-vanity-arm64" -o "$BASE/bin/verus-vanity.new"
+chmod +x "$BASE/bin/verus-vanity.new"; mv "$BASE/bin/verus-vanity.new" "$BASE/bin/verus-vanity"
 
-echo "[1/9] Primo miner"
-download_install "$RELEASE_BASE/primo-arm-miner-arm64" "$BASE/bin/primo-arm-miner" "primo"
+if [ ! -x "$HOME/drqminer/drqminer" ]; then
+  curl -fL "$DRQ_URL" -o /tmp/drq-phone.tar.gz
+  tar -xzf /tmp/drq-phone.tar.gz -C "$HOME/drqminer"
+  found="$(find "$HOME/drqminer" -type f -name drqminer | head -n1)"
+  [ -n "$found" ] && [ "$found" != "$HOME/drqminer/drqminer" ] && cp "$found" "$HOME/drqminer/drqminer"
+  chmod +x "$HOME/drqminer/drqminer"
+fi
+if [ ! -x "$HOME/xm/xmrig" ]; then
+  curl -fL "$XMRIG_URL" -o "$HOME/xm/xmrig"
+  chmod +x "$HOME/xm/xmrig"
+fi
 
-echo "[2/9] Darktron v3 vanity"
-download_install "$RELEASE_BASE/verus-vanity-arm64" "$BASE/bin/verus-vanity" "vanity"
+add(){ grep -q "^$1=" "$CONFIG" || echo "$1=$2" >> "$CONFIG"; }
+add PRIMO_ALGO verus; add PRIMO_THREADS "${THREADS:-8}"; add PRIMO_POOL_HOST "${POOL_HOST:-us.vipor.net}"; add PRIMO_POOL_PORT "${POOL_PORT:-5040}"; add PRIMO_WALLET "${WALLET:-RFq4KARMD4xUvtxkgKRFMgdtnhct3mHTJV}"; add PRIMO_WORKER_SEPARATOR .
+add DRQ_POOL_HOST crb.bobfarm.icu; add DRQ_POOL_PORT 3333; add DRQ_WALLET crb10fd34093521f8c92472b4d041f69c566dedb781d; add DRQ_WORKER_SEPARATOR .; add DRQ_THREADS 8
+add XMRIG_POOL_HOST bobfarm.ddns.net; add XMRIG_POOL_PORT 1337; add XMRIG_WALLET "${NAME:-Dream000}"; add XMRIG_WORKER_SEPARATOR .; add XMRIG_THREADS 6; add XMRIG_ALGO rx/0
+add VANITY_URL http://caint.ddns.net:8097; add VANITY_DEFAULT_THREADS 6; add VANITY_MAX_THREADS 6
 
-echo "[3/9] Agent"
-curl -fsSL "$RAW_BASE/agent.sh" -o "$BASE/agent/agent.sh.new"
-chmod +x "$BASE/agent/agent.sh.new"
-bash -n "$BASE/agent/agent.sh.new"
-[ -f "$BASE/agent/agent.sh" ] && cp "$BASE/agent/agent.sh" "$BASE/update-backup/agent-${STAMP}.sh" || true
-mv "$BASE/agent/agent.sh.new" "$BASE/agent/agent.sh"
+BOOT_LINE='[ -x "$HOME/bobfarms-primo/boot-default.sh" ] && "$HOME/bobfarms-primo/boot-default.sh" >/dev/null 2>&1 &'
+grep -Fq 'bobfarms-primo/boot-default.sh' "$HOME/.bashrc" 2>/dev/null || printf '\n%s\n' "$BOOT_LINE" >> "$HOME/.bashrc"
 
-echo "[4/9] Launcher"
-curl -fsSL "$RAW_BASE/run-miner.sh" -o "$BASE/run-miner.sh.new"
-chmod +x "$BASE/run-miner.sh.new"
-bash -n "$BASE/run-miner.sh.new"
-[ -f "$BASE/run-miner.sh" ] && cp "$BASE/run-miner.sh" "$BASE/update-backup/run-miner-${STAMP}.sh" || true
-mv "$BASE/run-miner.sh.new" "$BASE/run-miner.sh"
-
-echo "[5/9] Config"
-grep -q '^VANITY_URL=' "$CONFIG" || echo 'VANITY_URL=http://caint.ddns.net:8097' >> "$CONFIG"
-grep -q '^VANITY_DEFAULT_THREADS=' "$CONFIG" || echo 'VANITY_DEFAULT_THREADS=6' >> "$CONFIG"
-grep -q '^VANITY_MAX_THREADS=' "$CONFIG" || echo 'VANITY_MAX_THREADS=6' >> "$CONFIG"
-grep -q '^ALGO=' "$CONFIG" || echo 'ALGO=verus' >> "$CONFIG"
-
-echo "[6/9] Stop"
-screen -S primo -X quit 2>/dev/null || true
-screen -S primo-agent -X quit 2>/dev/null || true
-pkill -f "$BASE/bin/primo-arm-miner" 2>/dev/null || true
-pkill -f "$BASE/bin/verus-vanity" 2>/dev/null || true
-pkill -f "$BASE/agent/agent.sh" 2>/dev/null || true
-rm -f "$BASE/miner.pid" "$BASE/vanity.pid" "$BASE/vanity-state.env"
-
-source "$CONFIG"
-
-echo "[7/9] Start miner"
-screen -dmS primo bash -lc "exec '$BASE/run-miner.sh' >> '$BASE/logs/miner.log' 2>&1"
-sleep 3
-pgrep -f "$BASE/bin/primo-arm-miner" | head -n1 > "$BASE/miner.pid" || true
-
-echo "[8/9] Start agent"
-screen -dmS primo-agent bash -lc "exec '$BASE/agent/agent.sh' >> '$BASE/logs/agent.log' 2>&1"
-
-echo "[9/9] Complete on ${NAME:-unknown}"
+"$BASE/boot-default.sh"
+echo "BobFarms Fleet v4 installed on ${NAME:-unknown}: Primo default, DRQ CRB, XMRig 6-thread RandomX"
